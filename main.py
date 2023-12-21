@@ -28,7 +28,7 @@ import re
 import auth_functions
 from pymongo import MongoClient
 import ssl
-
+import time
 
 openai.api_key = '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'
 os.environ["OPENAI_API_KEY"]= "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"
@@ -192,7 +192,7 @@ def get_census_tract_data(drive_time_polygon, state_code):
     
     # Extract the data and return
     census_tract_data = gdf[gdf.geometry.within(drive_time_polygon_geom.geometry.unary_union)]
-    st.write(census_tract_data)
+    #st.write(census_tract_data)
     return census_tract_data
 
 # Function to load the index from the default storage
@@ -314,6 +314,8 @@ def main():
     ## Logged in --------------------------------------------------------------------------------------
     ## -------------------------------------------------------------------------------------------------
     else:
+        if 'response_str' not in st.session_state:
+            st.session_state.response_str = ''
         # Load your logo
         st.sidebar.image("haystacks_logo.svg", use_column_width=True)
         # Show user information
@@ -359,82 +361,98 @@ def main():
 
             # If the "Generate Map" button is pressed
             if st.button("Generate Map"):
-                address = st.session_state.address_input
-                if address:
-                    lat, lon, state_code = geocode_address(address)
-                    if lat and lon:
-                        
-                        st.session_state.map, st.session_state.census_data = None, None  # Resetting the map and census data
-                        drive_time_polygon, gdf_points = get_drive_time_polygon(lat, lon, drive_minutes, GOOGLE_MAPS_API_KEY)
-                        census_tract_data = get_census_tract_data(drive_time_polygon, state_code)
-                        map_ = create_map(lat, lon, drive_time_polygon, gdf_points, census_tract_data)
-                        insert_address_to_mongo(address, drive_minutes)
-                        # Use folium to render the map in Streamlit
-                        folium_static(map_)
-                        
-                        # Store map and census data in the session state
-                        st.session_state.map = map_
-                        st.session_state.census_data = census_tract_data.describe()
-                    else:
-                        st.error("Could not geocode the address.")
-                else:
-                    st.error("Please enter an address and API Key.")
+                with st.spinner('Calculating drive time polygon...'):
+                    address = st.session_state.address_input
+                    if address:
+                        lat, lon, state_code = geocode_address(address)
+                        if lat and lon:
+                            
+                            st.session_state.map, st.session_state.census_data = None, None  # Resetting the map and census data
+                            drive_time_polygon, gdf_points = get_drive_time_polygon(lat, lon, drive_minutes, GOOGLE_MAPS_API_KEY)
 
-                # Always display the map and census data if they have been generated
-                if st.session_state.map is not None:
-                    #folium_static(st.session_state.map)
-                    st.write(st.session_state.census_data)
+                            # Placeholder for progress updates
+                            progress_placeholder = st.empty()
 
-                # Input for type of census data after the map is generated
-                data_type = st.text_input("Specify the type of Census data you'd like to retrieve:")
-                submit_button = st.button("Submit Census Query")
+                            # Show progress and updates
+                            for i in range(100):
+                                time.sleep(0.08)  # simulate processing time
+                                if i % 20 == 0:
+                                    progress_placeholder.write(f"Processing...{i}% done")
 
-                # Inject the user input into the prompt and get the response from the LLM when "Submit Census Query" is clicked
-                if submit_button and data_type:
-                    index = load_llama_index()  # Load the index
-                    # Assuming OpenAI and query_engine are defined and set up correctly here
-                    query_str = (
-                        "The JSON file contains keys 'label', 'concept', 'predicateType', 'group', 'limit', and 'attributes'. "
-                        f"I want to focus on the 'label' and 'concept' keys for {data_type} "
-                        "The output should list the variable names (from 'label') and their descriptions (from 'concept') in a clear and structured way. "
-                        "Here is a sample format for the output I am expecting:"
-                        "\n\n"
-                        "- C17002_001E: Estimate!!Total:!!$150,000 to $199,999: Household Income in the Past 12 Months (in 2022 Inflation-Adjusted Dollars) (Black or African American Alone Householder)\n"
-                        "- C17002_002E: Estimate!!Total:!!$200,000 or more: Household Income in the Past 12 Months (in 2022 Inflation-Adjusted Dollars) (Black or African American Alone Householder)\n"
-                        "\n"
-                        f"Please extract the variable names and their corresponding descriptions following this format, focusing on the ones relevant to {data_type} . Make sure to be exhaustive in your search and surface a diverse range of categories of data and not just repetition of the same type."
-                    )
-                    llm = OpenAI(model="gpt-4")
-                    query_engine = index.as_query_engine(
-                        mode='tree_summarize',
-                        top_k=50,
-                    )
-                    # Here you would execute the query and store the result in session state
-                    st.session_state.response_str = "LLM data"  # Placeholder for the actual LLM query result
-                    
-                # Display the LLM Response if available
-                if st.session_state.response_str:
-                    st.text("LLM Response:")
+                            # Clear the progress messages
+                            progress_placeholder.empty()
 
-                    response_str = query_engine.query(query_str)
-                    st.write(response_str.response)
 
-                    # Adjust this pattern according to the actual format of variable codes in response_str
-                    pattern = r'- (B\d{5}_\d{3}E):'
 
-                    # Find all matches in the response string
-                    variable_codes = re.findall(pattern, response_str.response)
-                    fetch_census_data_button = st.button("Fetch Census Data")
-                    if fetch_census_data_button:
-                        if variable_codes:
-                            # Fetch the census data using the variable codes
-                            state_code = '26'  # California
-                            county_code = '125'  # San Francisco County
-                            tract_code = '168901'
-                            census_data = fetch_census_data(variable_codes, state_code, county_code, tract_code)
-                            st.write(census_data)
+                            census_tract_data = get_census_tract_data(drive_time_polygon, state_code)
+                            map_ = create_map(lat, lon, drive_time_polygon, gdf_points, census_tract_data)
+                            insert_address_to_mongo(address, drive_minutes)
+                            # Use folium to render the map in Streamlit
+                            folium_static(map_)
+                            
+                            # Store map and census data in the session state
+                            st.session_state.map = map_
+                            st.session_state.census_data = census_tract_data.describe()
                         else:
-                            st.error("No variable codes found in the response.")
+                            st.error("Could not geocode the address.")
+                    else:
+                        st.error("Please enter an address and API Key.")
+
+                    # Always display the map and census data if they have been generated
+                    if st.session_state.map is not None:
+                        #folium_static(st.session_state.map)
+                        st.write(st.session_state.census_data)
+
+                    # Input for type of census data after the map is generated
+                    data_type = st.text_input("Specify the type of Census data you'd like to retrieve:")
+                    submit_button = st.button("Submit Census Query")
+
+                    # Inject the user input into the prompt and get the response from the LLM when "Submit Census Query" is clicked
+                    if submit_button and data_type:
+                        index = load_llama_index()  # Load the index
+                        # Assuming OpenAI and query_engine are defined and set up correctly here
+                        query_str = (
+                            "The JSON file contains keys 'label', 'concept', 'predicateType', 'group', 'limit', and 'attributes'. "
+                            f"I want to focus on the 'label' and 'concept' keys for {data_type} "
+                            "The output should list the variable names (from 'label') and their descriptions (from 'concept') in a clear and structured way. "
+                            "Here is a sample format for the output I am expecting:"
+                            "\n\n"
+                            "- C17002_001E: Estimate!!Total:!!$150,000 to $199,999: Household Income in the Past 12 Months (in 2022 Inflation-Adjusted Dollars) (Black or African American Alone Householder)\n"
+                            "- C17002_002E: Estimate!!Total:!!$200,000 or more: Household Income in the Past 12 Months (in 2022 Inflation-Adjusted Dollars) (Black or African American Alone Householder)\n"
+                            "\n"
+                            f"Please extract the variable names and their corresponding descriptions following this format, focusing on the ones relevant to {data_type} . Make sure to be exhaustive in your search and surface a diverse range of categories of data and not just repetition of the same type."
+                        )
+                        llm = OpenAI(model="gpt-4")
+                        query_engine = index.as_query_engine(
+                            mode='tree_summarize',
+                            top_k=50,
+                        )
+                        # Here you would execute the query and store the result in session state
+                        st.session_state.response_str = "LLM data"  # Placeholder for the actual LLM query result
+                        
+                    # Display the LLM Response if available
+                    if st.session_state.response_str:
+                        st.text("LLM Response:")
+
+                        response_str = query_engine.query(query_str)
+                        st.write(response_str.response)
+
+                        # Adjust this pattern according to the actual format of variable codes in response_str
+                        pattern = r'- (B\d{5}_\d{3}E):'
+
+                        # Find all matches in the response string
+                        variable_codes = re.findall(pattern, response_str.response)
+                        fetch_census_data_button = st.button("Fetch Census Data")
+                        if fetch_census_data_button:
+                            if variable_codes:
+                                # Fetch the census data using the variable codes
+                                state_code = '26'  # California
+                                county_code = '125'  # San Francisco County
+                                tract_code = '168901'
+                                census_data = fetch_census_data(variable_codes, state_code, county_code, tract_code)
+                                st.write(census_data)
+                            else:
+                                st.error("No variable codes found in the response.")
             pass
         elif option == 'Reports':
             # Code for Reports
