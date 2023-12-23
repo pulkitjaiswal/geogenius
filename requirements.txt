@@ -1,5 +1,4 @@
-openai 
-streamlit_authenticator 
-pandas 
-streamlit_folium
-shapely
+streamlit
+pandas
+folium
+streamlit-folium
