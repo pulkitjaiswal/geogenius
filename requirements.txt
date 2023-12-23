@@ -11,3 +11,5 @@ openai
 pymongo
 us
 census
+llama-index
+openai
