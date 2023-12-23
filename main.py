@@ -29,6 +29,8 @@ import auth_functions
 from pymongo import MongoClient
 import ssl
 import time
+from shapely.geometry import mapping
+from shapely.geometry import Point, Polygon, shape  # Include 'shape' here
 
 openai.api_key = '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'
 os.environ["OPENAI_API_KEY"]= "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"
@@ -162,11 +164,10 @@ def create_map(lat, lon, drive_time_polygon, gdf_points, census_tract_data):
     
     if drive_time_polygon:
         folium.Polygon(locations=drive_time_polygon, color='blue', fill=True, fill_color='blue').add_to(map_)
-    
+        st.write(f"🌍 Generated a polygon representing a {len(drive_time_polygon)}-point drive time area.")
+
     # Add the intersecting census tracts to the map
     if not census_tract_data.empty:
-        st.write("I will try to show census tract data")
-        st.write(census_tract_data)
         folium.GeoJson(
             census_tract_data.to_json(),
             style_function=lambda feature: {
@@ -176,10 +177,84 @@ def create_map(lat, lon, drive_time_polygon, gdf_points, census_tract_data):
                 'dashArray': '5, 5'
             }
         ).add_to(map_)
+        st.write(f"📊 Found {len(census_tract_data)} census tracts intersecting with the drive time area.")
+        st.write("🔍 Details of Intersecting Census Tracts:")
+        # Renaming columns for better readability
+        census_tract_data = census_tract_data.rename(columns={'NAME': 'Tract Name', 'GEOID': 'Tract ID', 'ALAND': 'Land Area (sq meters)', 'AWATER': 'Water Area (sq meters)'})
+        st.dataframe(census_tract_data[['Tract Name', 'Tract ID', 'Land Area (sq meters)', 'Water Area (sq meters)']])
     else: 
-        st.write("census_tract_data is empty")
+        st.write("❗️ No census tracts intersect within the specified drive time area.")
+
+    st.write("🔎 Here's the detailed map with the drive time area and intersecting census tracts:")
     return map_
-   
+
+
+def load_map_from_mongo(address, drive_minutes):
+    try:
+        # Query MongoDB for the stored data
+        query_result = collection.find_one({"address": address})
+        if query_result:
+            # Find the item in census_tract_data with the matching drive_time
+            matching_item = next((item for item in query_result.get("census_tract_data", []) if item.get("drive_time") == drive_minutes), None)
+            if matching_item is None:
+                st.write("❗️ No data found for the specified drive time.")
+                return False, None
+            else: 
+                st.write("❗️ Pulling data directly from database.")
+            # Get the stored census tracts data
+            census_data_for_map = matching_item.get("tracts", [])
+
+            # Get the stored drive_time_polygon
+            drive_time_polygon = matching_item.get("drive_time_polygon", {})
+
+            # Create map
+            lat, lon, _ = geocode_address(address)  # Reusing the geocode_address function
+            map_ = folium.Map(location=[lat, lon], zoom_start=12)
+
+            # Add the census tracts to the map
+            if not census_data_for_map:
+                st.write("❗️ No census tracts intersect within the specified drive time area.")
+            else:
+                for tract in census_data_for_map:
+                    # Convert GeoJSON back to Shapely Polygon
+                    tract_polygon = shape(tract['geometry'])
+                    folium.GeoJson(tract_polygon, style_function=lambda feature: {
+                        'fillColor': '#ffff00',
+                        'color': 'red',
+                        'weight': 3,
+                        'dashArray': '5, 5'
+                    }).add_to(map_)
+                st.write(f"📊 Found {len(census_data_for_map)} census tracts intersecting with the drive time area.")
+                st.write("🔍 Details of Intersecting Census Tracts:")
+                # Renaming columns for better readability
+                census_data_for_map = pd.DataFrame(census_data_for_map).rename(columns={'name': 'Tract Name', 'geoid': 'Tract ID', 'aland': 'Land Area (sq meters)', 'awater': 'Water Area (sq meters)'})
+                st.dataframe(census_data_for_map[['Tract Name', 'Tract ID', 'Land Area (sq meters)', 'Water Area (sq meters)']])
+            geojson_polygon = {
+                "type": "Polygon",
+                "coordinates": [[
+                    [item[1], item[0]] for item in drive_time_polygon["coordinates"][0]
+                ]]
+            }
+
+            # Add the drive time polygon to the map
+            folium.GeoJson(geojson_polygon, style_function=lambda feature: {
+                'fillColor': '#0000ff',
+                'color': 'blue',
+                'weight': 3,
+            }).add_to(map_)
+
+            # Display the map
+            st.write(f"🌍 Map for {address}, Drive Time: {drive_minutes} minutes")
+            folium_static(map_)
+            return True, census_data_for_map  # Return census data along with success status
+        else:
+            st.write("❗️ No data found for the specified address.")
+            return False, None
+    except Exception as e:
+        st.write(f"❗️ Failed to load data from MongoDB: {str(e)}")
+        return False, None
+    
+
 def get_census_tract_data(drive_time_polygon, state_code):
     """
     Fetch the census tract data within the given drive time polygon using PyGRIS.
@@ -253,12 +328,42 @@ def generate_real_estate_insights(census_data):
         return str(e)
 
 # Function to insert address into MongoDB
-def insert_address_to_mongo(address, drive_minutes):
+def insert_address_to_mongo(address, drive_minutes, census_tract_data, drive_time_polygon):
     try:
-        collection.insert_one({"address": address, "drive_minutes": drive_minutes})
-        st.success("Address stored in MongoDB.")
+        # Convert Shapely Polygons in census_tract_data to GeoJSON
+        census_data_for_mongo = [{
+            'name': tract.NAME,
+            'geoid': tract.GEOID,
+            'aland': tract.ALAND,
+            'awater': tract.AWATER,
+            'geometry': mapping(tract.geometry)
+        } for tract in census_tract_data.itertuples()]
+
+       # Convert list of coordinates to a Shapely Polygon
+        drive_time_polygon_geom = Polygon(drive_time_polygon)
+
+        # Convert Shapely Polygon to GeoJSON
+        drive_time_polygon_geojson = mapping(drive_time_polygon_geom)
+
+        # Check if address already exists
+        existing_record = collection.find_one({"address": address})
+        if existing_record:
+            # Update if new drive time data
+            if not any(drive["drive_time"] == drive_minutes for drive in existing_record["census_tract_data"]):
+                collection.update_one(
+                    {"_id": existing_record["_id"]},
+                    {"$push": {"census_tract_data": {"drive_time": drive_minutes, "tracts": census_data_for_mongo, "drive_time_polygon": drive_time_polygon_geojson}}}
+                )
+        else:
+            # Insert new document
+            collection.insert_one({
+                "address": address,
+                "census_tract_data": [{"drive_time": drive_minutes, "tracts": census_data_for_mongo, "drive_time_polygon": drive_time_polygon_geojson}]
+            })
+        st.success("Data stored in MongoDB.")
     except Exception as e:
-        st.error(f"Failed to store address: {e}")
+        st.error(f"Failed to store data: {e}")
+
 
 # Function to fetch matching addresses from the database
 def fetch_matching_addresses(input_text):
@@ -358,50 +463,63 @@ def main():
 
             drive_minutes = st.slider("Drive time in minutes:", 5, 60, 10, key='drive_minutes')
 
-
             # If the "Generate Map" button is pressed
             if st.button("Generate Map"):
-                with st.spinner('Calculating drive time polygon...'):
-                    address = st.session_state.address_input
-                    if address:
-                        lat, lon, state_code = geocode_address(address)
-                        if lat and lon:
-                            
-                            st.session_state.map, st.session_state.census_data = None, None  # Resetting the map and census data
-                            drive_time_polygon, gdf_points = get_drive_time_polygon(lat, lon, drive_minutes, GOOGLE_MAPS_API_KEY)
+                address = st.session_state.address_input
+                if address:
+                    data_loaded, census_tract_data = load_map_from_mongo(address, drive_minutes)
+                
+                    # Try to load map from MongoDB
+                    if not data_loaded:
+                        # Generate new map if data not in MongoDB
+                        with st.spinner('Calculating drive time polygon...'):
+                            lat, lon, state_code = geocode_address(address)
+                            if lat and lon:
+                                st.session_state.map, st.session_state.census_data = None, None  # Resetting the map and census data
+                                drive_time_polygon, gdf_points = get_drive_time_polygon(lat, lon, drive_minutes, GOOGLE_MAPS_API_KEY)
 
-                            # Placeholder for progress updates
-                            progress_placeholder = st.empty()
+                                # Placeholder for progress updates
+                                progress_placeholder = st.empty()
 
-                            # Show progress and updates
-                            for i in range(100):
-                                time.sleep(0.08)  # simulate processing time
-                                if i % 20 == 0:
-                                    progress_placeholder.write(f"Processing...{i}% done")
+                                # Show progress and updates
+                                for i in range(100):
+                                    time.sleep(0.08)  # simulate processing time
+                                    if i % 20 == 0:
+                                        progress_placeholder.write(f"Processing...{i}% done")
 
-                            # Clear the progress messages
-                            progress_placeholder.empty()
+                                # Clear the progress messages
+                                progress_placeholder.empty()
 
 
 
-                            census_tract_data = get_census_tract_data(drive_time_polygon, state_code)
-                            map_ = create_map(lat, lon, drive_time_polygon, gdf_points, census_tract_data)
-                            insert_address_to_mongo(address, drive_minutes)
-                            # Use folium to render the map in Streamlit
-                            folium_static(map_)
-                            
-                            # Store map and census data in the session state
-                            st.session_state.map = map_
-                            st.session_state.census_data = census_tract_data.describe()
-                        else:
-                            st.error("Could not geocode the address.")
+                                census_tract_data = get_census_tract_data(drive_time_polygon, state_code)
+                                if census_tract_data is not None:
+                                    map_ = create_map(lat, lon, drive_time_polygon, gdf_points, census_tract_data)
+                                    # Insert new data into MongoDB
+                                    drive_time_polygon, gdf_points = get_drive_time_polygon(lat, lon, drive_minutes, GOOGLE_MAPS_API_KEY)
+
+                                    insert_address_to_mongo(address, drive_minutes, census_tract_data, drive_time_polygon)
+                                    folium_static(map_)
+                                    st.session_state.map = map_
+                                    st.session_state.census_data = census_tract_data.describe()
+                                else:
+                                    st.error("Census tract data not found for the specified address and drive time.")
                     else:
-                        st.error("Please enter an address and API Key.")
+                        # Get lat and lon from the MongoDB document
+                        document = collection.find_one({"address": address, "drive_minutes": drive_minutes})
+                        #lat, lon, state_code = geocode_address(address)
+    
+                        # Use the returned census_tract_data to create the map and update the session state
+                        #drive_time_polygon, gdf_points = get_drive_time_polygon(lat, lon, drive_minutes, GOOGLE_MAPS_API_KEY)
+                        #map_ = create_map(lat, lon, drive_time_polygon, gdf_points, census_tract_data)
+                        #folium_static(map_)
+                        #st.session_state.map = map_
+                        st.session_state.census_data = census_tract_data.describe()
 
                     # Always display the map and census data if they have been generated
-                    if st.session_state.map is not None:
+                    #if st.session_state.map is not None:
                         #folium_static(st.session_state.map)
-                        st.write(st.session_state.census_data)
+                        #st.write(st.session_state.census_data)
 
                     # Input for type of census data after the map is generated
                     data_type = st.text_input("Specify the type of Census data you'd like to retrieve:")
