@@ -1,5 +1,12 @@
 streamlit
-pandas
+requests
 folium
 streamlit-folium
+shapely
 geopandas
+pandas
+pygris
+polyline
+openai
+pymongo
+us
