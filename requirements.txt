@@ -1,6 +1,5 @@
 openai 
 streamlit_authenticator 
-streamlit_caching 
 pandas 
 folium 
 shapely
