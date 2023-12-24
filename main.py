@@ -34,13 +34,38 @@ from shapely.geometry import Point, Polygon, shape  # Include 'shape' here
 
 openai.api_key = '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'
 os.environ["OPENAI_API_KEY"]= "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"
-
+c = Census("9873cb96ddca9200a10b8c9f57c34fa09dc0ceaf")
 MONGO_URI = 'mongodb+srv://overlord-one:sbNciWt8sf5KUkmU@asc-fin-data.oxz1gjj.mongodb.net/?retryWrites=true&w=majority'
 client = MongoClient(MONGO_URI, tls=ssl.HAS_SNI, tlsAllowInvalidCertificates=True)
 db = client['manhattan-project']
 collection = db['demographics']
 
+variable_codes = [
+    'B01003_001E',  # Total Population
+    'B19013_001E',  # Median Household Income
+    'B25077_001E',  # Median Home Value
+    'B01001_011E',  # Population by Age Group: Males 65 to 74
+    'B01001_035E',  # Population by Age Group: Females 65 to 74
+    'B01001_019E',  # Population by Age Group: Males 75 to 84
+    'B01001_043E',  # Population by Age Group: Females 75 to 84
+    'B01001_023E',  # Population by Age Group: Males 85+
+    'B01001_047E'   # Population by Age Group: Females 85+
+    # Additional income and age-related variables for calculating median income for 75+ households
+    # would be required, but they are not specified here.
+]
 
+
+variable_names = {
+    'B01003_001E': 'Total Population',
+    'B19013_001E': 'Median Household Income',
+    'B25077_001E': 'Median Home Value',
+    'B01001_011E': 'Male Population Age 65-74',
+    'B01001_035E': 'Female Population Age 65-74',
+    'B01001_019E': 'Male Population Age 75-84',
+    'B01001_043E': 'Female Population Age 75-84',
+    'B01001_023E': 'Male Population Age 85+',
+    'B01001_047E': 'Female Population Age 85+',
+}
 def download_link(object_to_download, download_filename, download_link_text):
     """
     Generates a link to download the given object_to_download.
@@ -282,7 +307,7 @@ def load_llama_index():
     return index
 
 def fetch_census_data(variables, state_code, county_code, tract_code, year=2021):
-    c = Census("9873cb96ddca9200a10b8c9f57c34fa09dc0ceaf")
+    
     data = {}
     for var in variables:
         try:
@@ -378,10 +403,30 @@ def on_address_select():
     st.session_state.address_input = st.session_state.address_select
 
 
+def fetch_census_data(variables, state_code, county_code, tract_code, year=2021):
+    data = {}
+    for var in variables:
+        try:
+            # Query the ACS5 data for each variable
+            query_result = c.acs5.state_county_tract(
+                fields = (var, 'NAME'), 
+                state_fips=states.lookup(state_code).fips, 
+                county_fips=county_code, 
+                tract=tract_code,
+                year=year
+            )
+            if query_result:
+                data[var] = query_result[0]
+            else:
+                data[var] = 'No data found'
+        except Exception as e:
+            data[var] = f"Error fetching data for variable {var}: {e}"
+    return data
+
 
 def main():
     from datetime import datetime
-
+    geo_id = None
     if 'user_info' not in st.session_state:
         col1,col2,col3 = st.columns([1,2,1])
 
@@ -454,17 +499,103 @@ def main():
 
         # Use the selected option
         if option == 'Address Lookup':
-            # User types an address
-            user_input = st.text_input("Enter an address:", key='address_input')
+            # Sample up to 5 random documents from MongoDB
+            sampled_documents = list(collection.aggregate([{'$sample': {'size': 6}}]))
 
-            # Fetch and display matching addresses
-            matching_addresses = fetch_matching_addresses(user_input)
-            selected_address = st.selectbox("Matching addresses:", matching_addresses, key='address_select', on_change=on_address_select)
+            # Get a list of addresses from the sampled documents
+            addresses = [doc['address'] for doc in sampled_documents]
+            # Define custom CSS to style the flash cards
+            # Custom CSS for the flash cards
+      
 
-            drive_minutes = st.slider("Drive time in minutes:", 5, 60, 10, key='drive_minutes')
+           
 
-            # If the "Generate Map" button is pressed
+            # Display the flash cards with addresses and drive times
+            st.write("### Explore Prime Addresses & Insights")
+            # Create a container for horizontal scrolling
+            # Calculate the number of columns based on the number of sampled documents
+            grid_cols = 3
+            rows = (len(sampled_documents) + grid_cols - 1) // grid_cols
+            
+            # Define custom CSS to hide the button visually but keep it interactive
+            invisible_button_css = """
+            <style>
+            .invisible-button {
+                background-color: transparent; /* Transparent background */
+                border: none; /* No border */
+                color: transparent; /* Transparent text */
+                width: 100%;
+                height: 100%;
+                position: absolute;
+                top: 0;
+                left: 0;
+                z-index: 10;
+            }
+            .flash-card {
+                position: relative; /* Relative position to contain the absolute button */
+                /* Other styles... */
+            }
+            </style>
+            """
+            # Add custom CSS to the Streamlit app
+            st.markdown(invisible_button_css, unsafe_allow_html=True)
+
+            for i in range(rows):
+                cols = st.columns(grid_cols)  # Create a new row of columns
+                for j in range(grid_cols):
+                    idx = i * grid_cols + j
+                    if idx < len(sampled_documents):
+                        doc = sampled_documents[idx]
+                        address = doc.get('address', 'No Address')
+                        drive_time = doc.get('census_tract_data', [{}])[0].get('drive_time', 'No Drive Time')
+                        with cols[j]:  # Use the column context
+                            # Create a button for each address
+                            if st.button(address, key=f"address_{idx}"):
+                                # Simulate a form fill-out
+                                st.session_state['address_input'] = address
+                                st.session_state['drive_minutes'] = drive_time
+                                st.session_state["trigger_map_generation"]=True
+                                # Rerun the script to update the UI
+                                #st.experimental_rerun()
+                            # Create the flash card with address and drive time within the column
+                            st.markdown(f"""
+                            <div style='border:2px solid #3DFF50; border-radius:10px;
+                                        padding:10px; position: relative; background-color: transparent;
+                                        min-width: 220px; min-height:150px; box-sizing: border-box;margin-bottom:10px'>
+                                <h5 style='margin-bottom: 5px;'>{address}</h3>
+                                <div style='position: absolute; bottom: 10px; right: 10px;
+                                            background-color: #3DFF50; color: #000;
+                                            padding: 2px 5px; border-radius: 5px;
+                                            font-weight: bold;'>{drive_time} min</div>
+                            </div>
+                            <button class="invisible-button" onclick="document.getElementById('address_{idx}').click();"></button>
+                            """, unsafe_allow_html=True)
+                    else:
+                        with cols[j]:  # Create an empty column if no more documents
+                            st.write("")
+
+            # Check if a map should be generated based on a button click
+            if st.session_state.get('trigger_map_generation', True):
+                # Populate the address input and drive time slider with the selected values
+                address_input = st.text_input("Enter an address:", value=st.session_state.get('address_input', ''), key='address_input')
+                drive_minutes = st.slider("Drive time in minutes:", 5, 60, value=st.session_state.get('drive_minutes', 10), key='drive_minutes')
+                # Reset the trigger to avoid repeated map generation
+            else:
+                # Normal display of the widgets
+                # Use the session state variable as the value for the text input
+                address_input = st.text_input("Enter an address:", value=st.session_state.get('address_input', ''), key='address_input')
+                drive_minutes = st.slider("Drive time in minutes:", 5, 60, 10, key='drive_minutes')
+
+            
+
+            # If the "Generate Map" button is pressed, set the trigger for map generation
             if st.button("Generate Map"):
+                st.session_state['trigger_map_generation'] = True
+
+            # Check if a map should be generated based on a button click or the session state trigger
+            if st.session_state.get('trigger_map_generation', False):
+                st.session_state['trigger_map_generation'] = False
+
                 address = st.session_state.address_input
                 if address:
                     data_loaded, census_tract_data = load_map_from_mongo(address, drive_minutes)
@@ -516,61 +647,74 @@ def main():
                         #st.session_state.map = map_
                         st.session_state.census_data = census_tract_data.describe()
 
-                    # Always display the map and census data if they have been generated
-                    #if st.session_state.map is not None:
-                        #folium_static(st.session_state.map)
-                        #st.write(st.session_state.census_data)
-
-                    # Input for type of census data after the map is generated
-                    data_type = st.text_input("Specify the type of Census data you'd like to retrieve:")
-                    submit_button = st.button("Submit Census Query")
-
-                    # Inject the user input into the prompt and get the response from the LLM when "Submit Census Query" is clicked
-                    if submit_button and data_type:
-                        index = load_llama_index()  # Load the index
-                        # Assuming OpenAI and query_engine are defined and set up correctly here
-                        query_str = (
-                            "The JSON file contains keys 'label', 'concept', 'predicateType', 'group', 'limit', and 'attributes'. "
-                            f"I want to focus on the 'label' and 'concept' keys for {data_type} "
-                            "The output should list the variable names (from 'label') and their descriptions (from 'concept') in a clear and structured way. "
-                            "Here is a sample format for the output I am expecting:"
-                            "\n\n"
-                            "- C17002_001E: Estimate!!Total:!!$150,000 to $199,999: Household Income in the Past 12 Months (in 2022 Inflation-Adjusted Dollars) (Black or African American Alone Householder)\n"
-                            "- C17002_002E: Estimate!!Total:!!$200,000 or more: Household Income in the Past 12 Months (in 2022 Inflation-Adjusted Dollars) (Black or African American Alone Householder)\n"
-                            "\n"
-                            f"Please extract the variable names and their corresponding descriptions following this format, focusing on the ones relevant to {data_type} . Make sure to be exhaustive in your search and surface a diverse range of categories of data and not just repetition of the same type."
-                        )
-                        llm = OpenAI(model="gpt-4")
-                        query_engine = index.as_query_engine(
-                            mode='tree_summarize',
-                            top_k=50,
-                        )
-                        # Here you would execute the query and store the result in session state
-                        st.session_state.response_str = "LLM data"  # Placeholder for the actual LLM query result
+                        # Print the column names to verify if 'GEOID' exists
+                        #st.write("Column names in census_tract_data:", census_tract_data.columns)
                         
-                    # Display the LLM Response if available
-                    if st.session_state.response_str:
-                        st.text("LLM Response:")
+                    # Initialize an empty dictionary for aggregated data
+                    aggregated_data = {key: 0 for key in variable_codes}
+                    # Initialize a progress bar
+                    progress_bar = st.progress(0)
+                    total_tracts = len(census_tract_data)
+                    current_tract = 0
+                    # Create a placeholder for status messages
+                    status_message = st.empty()
+                    # Iterate over each tract in the drive time polygon
+                    for idx, tract in census_tract_data.iterrows():
+                        try:
+                            geo_id = str(tract['Tract ID'])
+                            state_fips = geo_id[:2]
+                            county_fips = geo_id[2:5]
+                            tract_code = geo_id[5:]
 
-                        response_str = query_engine.query(query_str)
-                        st.write(response_str.response)
+                            # Fetch data for each tract
+                            tract_data = fetch_census_data(variable_codes, state_fips, county_fips, tract_code)
 
-                        # Adjust this pattern according to the actual format of variable codes in response_str
-                        pattern = r'- (B\d{5}_\d{3}E):'
+                            # Accumulate results and update progress
+                            for key in tract_data:
+                                if key in aggregated_data:
+                                    aggregated_data[key] += tract_data[key].get(key, 0)
 
-                        # Find all matches in the response string
-                        variable_codes = re.findall(pattern, response_str.response)
-                        fetch_census_data_button = st.button("Fetch Census Data")
-                        if fetch_census_data_button:
-                            if variable_codes:
-                                # Fetch the census data using the variable codes
-                                state_code = '26'  # California
-                                county_code = '125'  # San Francisco County
-                                tract_code = '168901'
-                                census_data = fetch_census_data(variable_codes, state_code, county_code, tract_code)
-                                st.write(census_data)
-                            else:
-                                st.error("No variable codes found in the response.")
+                            # Save the processed data to MongoDB
+                            mongo_update = {
+                                'name': tract['Tract Name'],
+                                'geoid': geo_id,
+                                'aland': tract.get('Land Area (sq meters)', 0),
+                                'awater': tract.get('Water Area (sq meters)', 0),
+                                'demographics': tract_data  # Store the fetched data
+                            }
+
+                            # Update the MongoDB document
+                            collection.update_one(
+                                {"address": address, "census_tract_data.drive_time": drive_minutes},
+                                {"$push": {"census_tract_data.$.tracts": mongo_update}}
+                            )
+
+
+                        except Exception as e:
+                            st.error(f"Error processing tract {geo_id}: {e}")
+
+                        # Update progress
+                        current_tract += 1
+                        progress_percentage = current_tract / total_tracts
+                        progress_bar.progress(progress_percentage)
+
+                        # Update status message
+                        status_message.text(f"Processing tract {current_tract} of {total_tracts} ({geo_id})")
+                    
+                    # Create a dictionary to hold the transformed data with readable column names
+                    readable_aggregated_data = {}
+
+                    # Loop through the variable_names dictionary to map codes to readable names
+                    for code, readable_name in variable_names.items():
+                        readable_aggregated_data[readable_name] = aggregated_data.get(code, 0)
+
+                    # Create a pandas DataFrame using the transformed data
+                    df = pd.DataFrame([readable_aggregated_data])
+
+                    # Display the DataFrame in Streamlit
+                    st.dataframe(df)
+                    status_message.empty()
+
             pass
         elif option == 'Reports':
             # Code for Reports
