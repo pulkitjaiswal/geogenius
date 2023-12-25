@@ -539,18 +539,6 @@ def main():
             rows = (len(sampled_documents) + grid_cols - 1) // grid_cols
             
           
-            # Define the custom CSS
-            button_style = """
-            <style>
-            div.stButton > button:first-child {
-                border: 2px solid #28a745 !important;
-                color: #28a745;
-            }
-            </style>
-            """
-
-            # Render the custom CSS with the markdown
-            st.markdown(button_style, unsafe_allow_html=True)
 
             for i in range(rows):
                 cols = st.columns(grid_cols)  # Create a new row of columns
@@ -561,19 +549,11 @@ def main():
                         address = doc.get('address', 'No Address')
                         drive_time = doc.get('census_tract_data', [{}])[0].get('drive_time', 'No Drive Time')
                         with cols[j]:  # Use the column context
-                            # Create a button for each address
-                            if st.button(address, key=f"address_{idx}"):
-                                st.session_state['address_input'] = address
-                                st.session_state['drive_minutes'] = drive_time
-                                st.session_state["trigger_map_generation"] = True
-                                st.session_state["clicked"] = True
-                                time.sleep(1)  # Delay for 1 second
-                                st.rerun()
                             # Create the flash card with address and drive time within the column
                             st.markdown(f"""
                             <div style='border:2px solid #3DFF50; border-radius:10px;
                                         padding:10px; position: relative; background-color: transparent;
-                                        min-width: 220px; min-height:150px; box-sizing: border-box;margin-bottom:10px'>
+                                        min-width: 220px; min-height:150px; box-sizing: border-box;margin-bottom:10px' onclick='alert("hi")'>
                                 <h5 style='margin-bottom: 5px;'>{address}</h3>
                                 <div style='position: absolute; bottom: 10px; right: 10px;
                                             background-color: #3DFF50; color: #000;
