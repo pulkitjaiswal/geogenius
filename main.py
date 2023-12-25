@@ -660,51 +660,56 @@ def main():
                     # Create a placeholder for status messages
                     status_message = st.empty()
                     # Iterate over each tract in the drive time polygon
-                    for idx, tract in st.session_state.census_data.iterrows():
-                        try:
-                            geo_id = str(tract['Tract ID'])
-                            state_fips = geo_id[:2]
-                            county_fips = geo_id[2:5]
-                            tract_code = geo_id[5:]
+                    existing_record = collection.find_one(
+                        {"address": address, "census_tract_data.drive_time": drive_minutes},
+                        {"census_tract_data.$": 1}
+                    )
+                    if existing_record and 'aggregated_data' in existing_record['census_tract_data'][0]:
+                        st.write("Aggregated data already exists for this address and drive time.")
+                        aggregated_data = existing_record['census_tract_data'][0]['aggregated_data']
+                    else:
+                        st.write("no data")    
+                        for idx, tract in st.session_state.census_data.iterrows():
+                            try:
+                                geo_id = str(tract['Tract ID'])
+                                state_fips = geo_id[:2]
+                                county_fips = geo_id[2:5]
+                                tract_code = geo_id[5:]
 
-                            # Fetch data for each tract
-                            tract_data = fetch_census_data(variable_codes, state_fips, county_fips, tract_code)
+                                # Fetch data for each tract
+                                tract_data = fetch_census_data(variable_codes, state_fips, county_fips, tract_code)
 
-                            # Accumulate results and update progress
-                            for key in tract_data:
-                                if key in aggregated_data:
-                                    aggregated_data[key] += tract_data[key].get(key, 0)
-
-                            # Save the processed data to MongoDB
-                            mongo_update = {
-                                'name': tract['Tract Name'],
-                                'geoid': geo_id,
-                                'aland': tract.get('Land Area (sq meters)', 0),
-                                'awater': tract.get('Water Area (sq meters)', 0),
-                                'demographics': tract_data  # Store the fetched data
-                            }
-
-                            # Update the MongoDB document
-                            collection.update_one(
-                                {"address": address, "census_tract_data.drive_time": drive_minutes},
-                                {"$push": {"census_tract_data.$.default_demographics": mongo_update}}
-                            )
+                                # Accumulate results and update progress
+                                for key in tract_data:
+                                    if key in aggregated_data:
+                                        aggregated_data[key] += tract_data[key].get(key, 0)
 
 
-                        except Exception as e:
-                            st.error(f"Error processing tract {geo_id}: {e}")
+                            except Exception as e:
+                                st.error(f"Error processing tract {geo_id}: {e}")
 
-                        # Update progress
-                        current_tract += 1
-                        progress_percentage = current_tract / total_tracts
-                        progress_bar.progress(progress_percentage)
+                            # Update progress
+                            current_tract += 1
+                            progress_percentage = current_tract / total_tracts
+                            progress_bar.progress(progress_percentage)
 
-                        # Update status message
-                        status_message.text(f"Processing tract {current_tract} of {total_tracts} ({geo_id})")
-                    
+                            # Update status message
+                            status_message.text(f"Processing tract {current_tract} of {total_tracts} ({geo_id})")
+                        
+                        
+                        # Update the document with the new 'aggregated_data' field
+                        result = collection.update_one(
+                            {"address": address, "census_tract_data.drive_time": drive_minutes},
+                            {"$set": {"census_tract_data.$.aggregated_data": aggregated_data}}
+                        )
+
+                        # Check if the update was successful
+                        if result.matched_count > 0:
+                            print(f"Document with address {address} updated successfully.")
+                        else:
+                            print(f"No document found with address {address} and drive time {drive_minutes}.")
                     # Create a dictionary to hold the transformed data with readable column names
                     readable_aggregated_data = {}
-
                     # Loop through the variable_names dictionary to map codes to readable names
                     for code, readable_name in variable_names.items():
                         readable_aggregated_data[readable_name] = aggregated_data.get(code, 0)
