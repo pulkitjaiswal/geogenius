@@ -632,7 +632,7 @@ def main():
                                     insert_address_to_mongo(address, drive_minutes, census_tract_data, drive_time_polygon)
                                     folium_static(map_)
                                     st.session_state.map = map_
-                                    st.session_state.census_data = census_tract_data.describe()
+                                    st.session_state.census_data = census_tract_data
                                 else:
                                     st.error("Census tract data not found for the specified address and drive time.")
                     else:
@@ -645,21 +645,22 @@ def main():
                         #map_ = create_map(lat, lon, drive_time_polygon, gdf_points, census_tract_data)
                         #folium_static(map_)
                         #st.session_state.map = map_
-                        st.session_state.census_data = census_tract_data.describe()
+                        st.session_state.census_data = census_tract_data
 
                         # Print the column names to verify if 'GEOID' exists
                         #st.write("Column names in census_tract_data:", census_tract_data.columns)
                         
                     # Initialize an empty dictionary for aggregated data
                     aggregated_data = {key: 0 for key in variable_codes}
+
                     # Initialize a progress bar
                     progress_bar = st.progress(0)
-                    total_tracts = len(census_tract_data)
+                    total_tracts = len(st.session_state.census_data)
                     current_tract = 0
                     # Create a placeholder for status messages
                     status_message = st.empty()
                     # Iterate over each tract in the drive time polygon
-                    for idx, tract in census_tract_data.iterrows():
+                    for idx, tract in st.session_state.census_data.iterrows():
                         try:
                             geo_id = str(tract['Tract ID'])
                             state_fips = geo_id[:2]
@@ -686,7 +687,7 @@ def main():
                             # Update the MongoDB document
                             collection.update_one(
                                 {"address": address, "census_tract_data.drive_time": drive_minutes},
-                                {"$push": {"census_tract_data.$.tracts": mongo_update}}
+                                {"$push": {"census_tract_data.$.default_demographics": mongo_update}}
                             )
 
 
