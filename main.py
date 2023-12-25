@@ -11,7 +11,6 @@ import shapely
 import polyline
 import logging
 import json
-GOOGLE_MAPS_API_KEY = "AIzaSyD0SiBZN7Rp9Gr8v86q69iuHRVWWDyv9VQ"
 from shapely.geometry import MultiPoint
 from census import Census
 from us import states
@@ -39,6 +38,27 @@ MONGO_URI = 'mongodb+srv://overlord-one:sbNciWt8sf5KUkmU@asc-fin-data.oxz1gjj.mo
 client = MongoClient(MONGO_URI, tls=ssl.HAS_SNI, tlsAllowInvalidCertificates=True)
 db = client['manhattan-project']
 collection = db['demographics']
+
+import numpy as np
+
+def weighted_median(data, weights):
+    """
+    Calculate the weighted median of a dataset.
+    
+    data: list or array-like, the data values.
+    weights: list or array-like, the weights corresponding to the data.
+    """
+    data, weights = np.array(data), np.array(weights)
+    sorted_indices = np.argsort(data)
+    sorted_data = data[sorted_indices]
+    sorted_weights = weights[sorted_indices]
+    cumulative_weights = np.cumsum(sorted_weights)
+    midpoint = 0.5 * sum(sorted_weights)
+    if any(cumulative_weights > midpoint):
+        median_idx = np.where(cumulative_weights >= midpoint)[0][0]
+        return sorted_data[median_idx]
+    return data[len(data) // 2]
+
 
 variable_codes = [
     'B01003_001E',  # Total Population
@@ -100,6 +120,7 @@ def haversine(lat1, lon1, lat2, lon2):
 
 def geocode_address(address):
     """Geocode an address to lat/long coordinates using Google Maps API."""
+    GOOGLE_MAPS_API_KEY = st.secrets["GOOGLE_MAPS_API_KEY"]
     geocode_url = f"https://maps.googleapis.com/maps/api/geocode/json?address={address}&key={GOOGLE_MAPS_API_KEY}"
     response = requests.get(geocode_url)
     if response.status_code == 200:
@@ -509,7 +530,7 @@ def main():
       
 
            
-
+            st.session_state['clicked'] = False
             # Display the flash cards with addresses and drive times
             st.write("### Explore Prime Addresses & Insights")
             # Create a container for horizontal scrolling
@@ -517,28 +538,19 @@ def main():
             grid_cols = 3
             rows = (len(sampled_documents) + grid_cols - 1) // grid_cols
             
-            # Define custom CSS to hide the button visually but keep it interactive
-            invisible_button_css = """
+          
+            # Define the custom CSS
+            button_style = """
             <style>
-            .invisible-button {
-                background-color: transparent; /* Transparent background */
-                border: none; /* No border */
-                color: transparent; /* Transparent text */
-                width: 100%;
-                height: 100%;
-                position: absolute;
-                top: 0;
-                left: 0;
-                z-index: 10;
-            }
-            .flash-card {
-                position: relative; /* Relative position to contain the absolute button */
-                /* Other styles... */
+            div.stButton > button:first-child {
+                border: 2px solid #28a745 !important;
+                color: #28a745;
             }
             </style>
             """
-            # Add custom CSS to the Streamlit app
-            st.markdown(invisible_button_css, unsafe_allow_html=True)
+
+            # Render the custom CSS with the markdown
+            st.markdown(button_style, unsafe_allow_html=True)
 
             for i in range(rows):
                 cols = st.columns(grid_cols)  # Create a new row of columns
@@ -551,12 +563,12 @@ def main():
                         with cols[j]:  # Use the column context
                             # Create a button for each address
                             if st.button(address, key=f"address_{idx}"):
-                                # Simulate a form fill-out
                                 st.session_state['address_input'] = address
                                 st.session_state['drive_minutes'] = drive_time
-                                st.session_state["trigger_map_generation"]=True
-                                # Rerun the script to update the UI
-                                #st.experimental_rerun()
+                                st.session_state["trigger_map_generation"] = True
+                                st.session_state["clicked"] = True
+                                time.sleep(1)  # Delay for 1 second
+                                st.rerun()
                             # Create the flash card with address and drive time within the column
                             st.markdown(f"""
                             <div style='border:2px solid #3DFF50; border-radius:10px;
@@ -568,7 +580,6 @@ def main():
                                             padding: 2px 5px; border-radius: 5px;
                                             font-weight: bold;'>{drive_time} min</div>
                             </div>
-                            <button class="invisible-button" onclick="document.getElementById('address_{idx}').click();"></button>
                             """, unsafe_allow_html=True)
                     else:
                         with cols[j]:  # Create an empty column if no more documents
@@ -576,26 +587,30 @@ def main():
 
             # Check if a map should be generated based on a button click
             if st.session_state.get('trigger_map_generation', True):
+                #st.write(st.session_state.get('address_input', ''), key='address_input')
                 # Populate the address input and drive time slider with the selected values
                 address_input = st.text_input("Enter an address:", value=st.session_state.get('address_input', ''), key='address_input')
                 drive_minutes = st.slider("Drive time in minutes:", 5, 60, value=st.session_state.get('drive_minutes', 10), key='drive_minutes')
+                st.session_state['clicked'] = True
+                # Rerun the script to update the UI
+                
+
                 # Reset the trigger to avoid repeated map generation
             else:
                 # Normal display of the widgets
                 # Use the session state variable as the value for the text input
                 address_input = st.text_input("Enter an address:", value=st.session_state.get('address_input', ''), key='address_input')
                 drive_minutes = st.slider("Drive time in minutes:", 5, 60, 10, key='drive_minutes')
-
-            
+                st.session_state['clicked'] = False
 
             # If the "Generate Map" button is pressed, set the trigger for map generation
             if st.button("Generate Map"):
-                st.session_state['trigger_map_generation'] = True
+                st.session_state['clicked'] = True
+                
 
             # Check if a map should be generated based on a button click or the session state trigger
-            if st.session_state.get('trigger_map_generation', False):
-                st.session_state['trigger_map_generation'] = False
-
+            if st.session_state.get('clicked', True):
+                st.session_state['clicked'] = False
                 address = st.session_state.address_input
                 if address:
                     data_loaded, census_tract_data = load_map_from_mongo(address, drive_minutes)
@@ -607,7 +622,7 @@ def main():
                             lat, lon, state_code = geocode_address(address)
                             if lat and lon:
                                 st.session_state.map, st.session_state.census_data = None, None  # Resetting the map and census data
-                                drive_time_polygon, gdf_points = get_drive_time_polygon(lat, lon, drive_minutes, GOOGLE_MAPS_API_KEY)
+                                drive_time_polygon, gdf_points = get_drive_time_polygon(lat, lon, drive_minutes, st.secrets["GOOGLE_MAPS_API_KEY"])
 
                                 # Placeholder for progress updates
                                 progress_placeholder = st.empty()
@@ -627,7 +642,7 @@ def main():
                                 if census_tract_data is not None:
                                     map_ = create_map(lat, lon, drive_time_polygon, gdf_points, census_tract_data)
                                     # Insert new data into MongoDB
-                                    drive_time_polygon, gdf_points = get_drive_time_polygon(lat, lon, drive_minutes, GOOGLE_MAPS_API_KEY)
+                                    drive_time_polygon, gdf_points = get_drive_time_polygon(lat, lon, drive_minutes, st.secrets["GOOGLE_MAPS_API_KEY"])
 
                                     insert_address_to_mongo(address, drive_minutes, census_tract_data, drive_time_polygon)
                                     folium_static(map_)
@@ -668,10 +683,10 @@ def main():
                         st.write("Aggregated data already exists for this address and drive time.")
                         aggregated_data = existing_record['census_tract_data'][0]['aggregated_data']
                     else:
-                        st.write("no data")    
+                        st.write("No data cached yet, we're going to call API for each census tract")    
                         for idx, tract in st.session_state.census_data.iterrows():
                             try:
-                                geo_id = str(tract['Tract ID'])
+                                geo_id = str(tract.get('Tract ID') or tract.get('GEOID', ''))
                                 state_fips = geo_id[:2]
                                 county_fips = geo_id[2:5]
                                 tract_code = geo_id[5:]
@@ -712,7 +727,29 @@ def main():
                     readable_aggregated_data = {}
                     # Loop through the variable_names dictionary to map codes to readable names
                     for code, readable_name in variable_names.items():
-                        readable_aggregated_data[readable_name] = aggregated_data.get(code, 0)
+                        data = aggregated_data.get(code, None)
+                        
+                        if data is not None and isinstance(data, list):
+                            if 'Median' in readable_name:
+                                # Extract the list of values and weights for the current code
+                                try:
+                                    values, weights = zip(*data)
+                                    # Calculate the weighted median
+                                    readable_aggregated_data[readable_name] = weighted_median(values, weights)
+                                except TypeError as e:
+                                    st.error(f"Error calculating weighted median for {readable_name}: {e}")
+                                    st.error(f"Data received: {data}")
+                            else:
+                                # For total counts, sum the values
+                                try:
+                                    total = sum(value for value, weight in data)
+                                    readable_aggregated_data[readable_name] = total
+                                except TypeError as e:
+                                    st.error(f"Error summing values for {readable_name}: {e}")
+                                    st.error(f"Data received: {data}")
+                        else:
+                            # Handle the case where data is not a list of tuples
+                            readable_aggregated_data[readable_name] = data if isinstance(data, (int, float)) else 0
 
                     # Create a pandas DataFrame using the transformed data
                     df = pd.DataFrame([readable_aggregated_data])
@@ -720,7 +757,7 @@ def main():
                     # Display the DataFrame in Streamlit
                     st.dataframe(df)
                     status_message.empty()
-
+                    
             pass
         elif option == 'Reports':
             # Code for Reports
