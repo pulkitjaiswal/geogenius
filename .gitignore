@@ -1,5 +1,5 @@
 # Ignore specific directories
 /storage/
-/streamlit/
+/.streamlit/
 /.ipynb_checkpoints/
 /data/
