@@ -30,14 +30,43 @@ import ssl
 import time
 from shapely.geometry import mapping
 from shapely.geometry import Point, Polygon, shape  # Include 'shape' here
+from llama_index import Document, VectorStoreIndex, StorageContext
+from llama_index import VectorStoreIndex, get_response_synthesizer
+from llama_index.indices.service_context import ServiceContext
+from llama_index.llms import OpenAI
+import pinecone
+from llama_index.vector_stores import PineconeVectorStore
 
-openai.api_key = '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'
-os.environ["OPENAI_API_KEY"]= "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"
-c = Census("9873cb96ddca9200a10b8c9f57c34fa09dc0ceaf")
-MONGO_URI = 'mongodb+srv://overlord-one:sbNciWt8sf5KUkmU@asc-fin-data.oxz1gjj.mongodb.net/?retryWrites=true&w=majority'
+openai.api_key = st.secrets['OPENAI_API_KEY']
+os.environ["OPENAI_API_KEY"]= st.secrets['OPENAI_API_KEY']
+c = Census(st.secrets['CENSUS_KEY'])
+MONGO_URI = st.secrets['MONGO_URI']
 client = MongoClient(MONGO_URI, tls=ssl.HAS_SNI, tlsAllowInvalidCertificates=True)
 db = client['manhattan-project']
 collection = db['demographics']
+# Initializing OpenAI and ServiceContext
+llm = OpenAI(model="gpt-4")
+service_context = ServiceContext.from_defaults(llm=llm)
+
+
+# Initialize Pinecone connection
+def initialize_pinecone_connection(api_key: str, environment: str) -> None:
+    pinecone.init(api_key=api_key, environment=environment)
+
+
+# Set up the Pinecone Vector Store with specified metadata filters
+def setup_vector_store(index_name: str) -> PineconeVectorStore:
+    # Connect to the existing Pinecone index
+    pinecone_index = pinecone.Index(index_name)
+    
+
+    # Construct the Pinecone vector store with the specified metadata filters
+    vector_store = PineconeVectorStore(pinecone_index=pinecone_index)
+    return vector_store
+
+
+
+
 
 import numpy as np
 
@@ -228,6 +257,42 @@ def create_map(lat, lon, drive_time_polygon, gdf_points, census_tract_data):
         # Renaming columns for better readability
         census_tract_data = census_tract_data.rename(columns={'NAME': 'Tract Name', 'GEOID': 'Tract ID', 'ALAND': 'Land Area (sq meters)', 'AWATER': 'Water Area (sq meters)'})
         st.dataframe(census_tract_data[['Tract Name', 'Tract ID', 'Land Area (sq meters)', 'Water Area (sq meters)']])
+        # Construct a prompt for the GPT model
+        # Assuming census_tract_data is a pandas DataFrame with the relevant data
+        tract_data_summary = census_tract_data[['Tract Name', 'Tract ID', 'Land Area (sq meters)', 'Water Area (sq meters)']].to_dict(orient='records')
+
+        # Construct a prompt for the GPT model
+        prompt = "Generate a detailed narrative analysis based on the following census tract data:\n\n"
+        for tract in tract_data_summary:
+            prompt += f"Tract Name: {tract['Tract Name']}, Tract ID: {tract['Tract ID']}, Land Area: {tract['Land Area (sq meters)']} square meters, Water Area: {tract.get('Water Area (sq meters)', 'unreported')} square meters.\n"
+
+        # Extract potential company name from the user's question using OpenAI
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Using the data from the intersecting census tracts within a specified drive time area, generate a detailed narrative that describes the land distribution, potential for development, and any notable features of the area. The tracts are numbered and include details about the land area in square feet. The description should highlight the diversity of the region, the potential for various land use applications, and provide a vivid image of the region’s potential for future investors or city planning developments."
+                }
+            ],
+            stream=True,
+        )
+
+        # Initialize an empty string to accumulate the response
+        accumulated_response = ""
+
+        # Process each event as it arrives
+        for event in response:
+            event_text = event.get('choices', [{}])[0].get('message', {}).get('content', '')
+            if event_text:
+                accumulated_response += event_text
+                # Use Streamlit's empty container to update the UI
+                placeholder = st.empty()
+                placeholder.write(accumulated_response)
+                time.sleep(0.1)  # Adjust the sleep time if necessary
+
+        # After the loop, display the final accumulated response
+        st.write(accumulated_response)
     else: 
         st.write("❗️ No census tracts intersect within the specified drive time area.")
 
@@ -275,24 +340,56 @@ def load_map_from_mongo(address, drive_minutes):
                 # Renaming columns for better readability
                 census_data_for_map = pd.DataFrame(census_data_for_map).rename(columns={'name': 'Tract Name', 'geoid': 'Tract ID', 'aland': 'Land Area (sq meters)', 'awater': 'Water Area (sq meters)'})
                 st.dataframe(census_data_for_map[['Tract Name', 'Tract ID', 'Land Area (sq meters)', 'Water Area (sq meters)']])
-            geojson_polygon = {
-                "type": "Polygon",
-                "coordinates": [[
-                    [item[1], item[0]] for item in drive_time_polygon["coordinates"][0]
-                ]]
-            }
+                tract_data_summary = census_data_for_map[['Tract Name', 'Tract ID', 'Land Area (sq meters)', 'Water Area (sq meters)']].to_dict(orient='records')
+                st.write("### Land Usage And Development Potential")
+                prompt = "Using the data from the intersecting census tracts within a specified drive time area, generate a detailed narrative (5 point detailed overview) that describes the land distribution, potential for development, and any notable features of the area. The tracts are numbered and include details about the land area in square feet. The description should highlight the diversity of the region, the potential for various land use applications, and provide a vivid image of the region’s potential for future investors or city planning developments. Finish with a conclusion sentence at the end. Consider the following data points for each tract::\n\n"
+                for tract in tract_data_summary:
+                    prompt += f"Tract Name: {tract['Tract Name']}, Tract ID: {tract['Tract ID']}, Land Area: {tract['Land Area (sq meters)']} square meters, Water Area: {tract.get('Water Area (sq meters)', 'unreported')} square meters.\n"
 
-            # Add the drive time polygon to the map
-            folium.GeoJson(geojson_polygon, style_function=lambda feature: {
-                'fillColor': '#0000ff',
-                'color': 'blue',
-                'weight': 3,
-            }).add_to(map_)
+                delay_time = 0.01 #  faster
+                answer = ''
+                message_placeholder = st.empty()
+                full_response = ""
+                try:
+                    full_response = ""
+                    for response in openai.ChatCompletion.create(
+                        model="gpt-4",
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": prompt
+                            }
+                        ],
+                        stream=True
+                    ):
+                        full_response += (response.choices[0].delta.content or "")
+                        message_placeholder.markdown(full_response + "▌")
+                    message_placeholder.markdown(full_response)
+                except openai.error.OpenAIError as e:
+                    #st.error(f"An error occurred with the OpenAI API call: {str(e)}")
+                    pass
+                except Exception as e:
+                    #st.error(f"An unexpected error occurred: {str(e)}")
+                    pass
+                
+                geojson_polygon = {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [item[1], item[0]] for item in drive_time_polygon["coordinates"][0]
+                    ]]
+                }
 
-            # Display the map
-            st.write(f"🌍 Map for {address}, Drive Time: {drive_minutes} minutes")
-            folium_static(map_)
-            return True, census_data_for_map  # Return census data along with success status
+                # Add the drive time polygon to the map
+                folium.GeoJson(geojson_polygon, style_function=lambda feature: {
+                    'fillColor': '#0000ff',
+                    'color': 'blue',
+                    'weight': 3,
+                }).add_to(map_)
+                st.write('### Cartography')
+                # Display the map
+                st.write(f"🌍 Map for {address}, Drive Time: {drive_minutes} minutes")
+                folium_static(map_)
+                return True, census_data_for_map  # Return census data along with success status
         else:
             st.write("❗️ No data found for the specified address.")
             return False, None
@@ -327,26 +424,6 @@ def load_llama_index():
     index = load_index_from_storage(storage_context)
     return index
 
-def fetch_census_data(variables, state_code, county_code, tract_code, year=2021):
-    
-    data = {}
-    for var in variables:
-        try:
-            # Query the ACS5 data for each variable
-            query_result = c.acs5.state_county_tract(
-                fields = (var, 'NAME'), 
-                state_fips=states.lookup(state_code).fips, 
-                county_fips=county_code, 
-                tract=tract_code,
-                year=year
-            )
-            if query_result:
-                data[var] = query_result[0]
-            else:
-                data[var] = 'No data found'
-        except Exception as e:
-            data[var] = f"Error fetching data for variable {var}: {e}"
-    return data
 
 def generate_real_estate_insights(census_data):
     """
@@ -424,24 +501,26 @@ def on_address_select():
     st.session_state.address_input = st.session_state.address_select
 
 
-def fetch_census_data(variables, state_code, county_code, tract_code, year=2021):
+def fetch_census_data(variables, state_code, county_code, tract_code, start_year=2017, end_year=2021):
     data = {}
     for var in variables:
-        try:
-            # Query the ACS5 data for each variable
-            query_result = c.acs5.state_county_tract(
-                fields = (var, 'NAME'), 
-                state_fips=states.lookup(state_code).fips, 
-                county_fips=county_code, 
-                tract=tract_code,
-                year=year
-            )
-            if query_result:
-                data[var] = query_result[0]
-            else:
-                data[var] = 'No data found'
-        except Exception as e:
-            data[var] = f"Error fetching data for variable {var}: {e}"
+        data[var] = {}
+        for year in range(start_year, end_year + 1):
+            try:
+                # Query the ACS5 data for each variable and year
+                query_result = c.acs5.state_county_tract(
+                    fields=(var, 'NAME'),
+                    state_fips=states.lookup(state_code).fips,
+                    county_fips=county_code,
+                    tract=tract_code,
+                    year=year
+                )
+                if query_result:
+                    data[var][year] = query_result[0]
+                else:
+                    data[var][year] = 'No data found'
+            except Exception as e:
+                data[var][year] = f"Error fetching data for variable {var} in year {year}: {e}"
     return data
 
 
@@ -580,7 +659,27 @@ def main():
                 # Normal display of the widgets
                 # Use the session state variable as the value for the text input
                 address_input = st.text_input("Enter an address:", value=st.session_state.get('address_input', ''), key='address_input')
-                drive_minutes = st.slider("Drive time in minutes:", 5, 60, 10, key='drive_minutes')
+                use_radius = st.checkbox("Use radius instead of drive time")
+                # Add a checkbox to toggle between drive time and radius mode
+                use_radius = st.checkbox("Use radius instead of drive time", value=st.session_state.get('use_radius', False), key='use_radius')
+
+                # Conditional display based on the checkbox state
+                if use_radius:
+                    # If the checkbox is checked, show a slider for radius in miles
+                    radius_miles = st.slider("Radius in miles:", min_value=5, max_value=60, step=5, value=st.session_state.get('radius_miles', 5), key='radius_miles')
+                    # Set the mode to 'radius' in session state
+                    st.session_state['mode'] = 'radius'
+                    # Store the radius value in session state
+                    st.session_state['radius_miles'] = radius_miles
+                else:
+                    # If the checkbox is not checked, show a slider for drive time in minutes
+                    drive_minutes = st.slider("Drive time in minutes:", min_value=5, max_value=60, value=st.session_state.get('drive_minutes', 10), key='drive_minutes')
+                    # Set the mode to 'drive_time' in session state
+                    st.session_state['mode'] = 'drive_time'
+                    # Store the drive time value in session state
+                    st.session_state['drive_minutes'] = drive_minutes
+
+                # Set the clicked state to False to indicate that the map should not be generated yet
                 st.session_state['clicked'] = False
 
             # If the "Generate Map" button is pressed, set the trigger for map generation
@@ -657,13 +756,17 @@ def main():
                     # Iterate over each tract in the drive time polygon
                     existing_record = collection.find_one(
                         {"address": address, "census_tract_data.drive_time": drive_minutes},
-                        {"census_tract_data.$": 1}
                     )
-                    if existing_record and 'aggregated_data' in existing_record['census_tract_data'][0]:
+                    st.write('### Demographics')
+                    if existing_record and 'aggregated_demographics_data' in existing_record:
                         st.write("Aggregated data already exists for this address and drive time.")
-                        aggregated_data = existing_record['census_tract_data'][0]['aggregated_data']
+                        # Use the existing aggregated data
+                        aggregated_data = existing_record['aggregated_demographics_data']
                     else:
-                        st.write("No data cached yet, we're going to call API for each census tract")    
+                        st.write("No data cached yet, we're going to call API for each census tract")
+                        # Initialize a dictionary to hold the aggregated data for each year
+                        aggregated_data_by_year = []
+
                         for idx, tract in st.session_state.census_data.iterrows():
                             try:
                                 geo_id = str(tract.get('Tract ID') or tract.get('GEOID', ''))
@@ -671,14 +774,12 @@ def main():
                                 county_fips = geo_id[2:5]
                                 tract_code = geo_id[5:]
 
-                                # Fetch data for each tract
+                                # Fetch data for each tract and each year
                                 tract_data = fetch_census_data(variable_codes, state_fips, county_fips, tract_code)
 
-                                # Accumulate results and update progress
-                                for key in tract_data:
-                                    if key in aggregated_data:
-                                        aggregated_data[key] += tract_data[key].get(key, 0)
-
+                                # Append the tract_data to the list
+                                aggregated_data_by_year.append(tract_data)
+                                st.write()
 
                             except Exception as e:
                                 st.error(f"Error processing tract {geo_id}: {e}")
@@ -690,55 +791,244 @@ def main():
 
                             # Update status message
                             status_message.text(f"Processing tract {current_tract} of {total_tracts} ({geo_id})")
+                        # Update the document with the new 'aggregated_data_by_year' field
+                        # Convert year keys to strings before updating MongoDB
+                        # Ensure the aggregated data by year is in the correct format with string keys
+                        # Update the MongoDB document with the new 'aggregated_data_by_year' list
+                        # Convert year keys to strings for each dictionary in the list
+
+                    
+             
                         
-                        
-                        # Update the document with the new 'aggregated_data' field
+                        # Initialize a dictionary to hold the aggregated data for each year and variable
+                        # Initialize the aggregated data structure
+                        aggregated_data = {str(year): {var: 0 for var in variable_codes} for year in range(2017, 2022)}
+
+                        # Loop through the list of tract data and sum the values for each variable and year
+                        # Debug: Check the structure of aggregated_data_by_year
+                        #st.write("Sample data from aggregated_data_by_year:", aggregated_data_by_year[:2])
+
+                        # Loop through the list of tract data and sum the values for each variable and year
+                        for tract_data in aggregated_data_by_year:
+                            for var in variable_codes:
+                                #st.write(f"Variable: {var}")
+                                if var in tract_data:
+                                    #st.write(f"Keys for {var}: {list(tract_data[var].keys())}")  # Print out the keys
+                                    pass
+                                else:
+                                    st.write(f"Variable {var} not found in tract_data.")
+                                    continue  # Skip to the next variable if the current one is not found
+
+                                for year in range(2017, 2022):
+                                    # Use integer for year when checking if it's in the dictionary
+                                    if year in tract_data[var]:
+                                        data_value = tract_data[var][year].get(var, 0)
+                                        #st.write(f"Year: {year}, Data Value: {data_value}")
+                                        aggregated_data[str(year)][var] += data_value
+                                    else:
+                                        st.write(f"Year {year} not found for variable {var} in tract_data.")
+
+                        # Convert integer keys to strings in aggregated_data
+                        aggregated_data_str_keys = {str(year): data for year, data in aggregated_data.items()}
+
+                        # Convert integer keys to strings in aggregated_data_by_year
+                        aggregated_data_by_year_str_keys = []
+                        for data in aggregated_data_by_year:
+                            data_str_keys = {}
+                            for var, year_data in data.items():
+                                year_data_str_keys = {str(year): values for year, values in year_data.items()}
+                                data_str_keys[var] = year_data_str_keys
+                            aggregated_data_by_year_str_keys.append(data_str_keys)
+
+                        # Now update the MongoDB document with the modified dictionaries
                         result = collection.update_one(
                             {"address": address, "census_tract_data.drive_time": drive_minutes},
-                            {"$set": {"census_tract_data.$.aggregated_data": aggregated_data}}
+                            {"$set": {
+                                "aggregated_demographics_data": aggregated_data_str_keys,
+                                "aggregated_demographics_data_by_year": aggregated_data_by_year_str_keys
+                            }},
+                            upsert=True  # This creates a new document if one doesn't exist
                         )
 
                         # Check if the update was successful
                         if result.matched_count > 0:
-                            print(f"Document with address {address} updated successfully.")
+                            st.success(f"Document with address {address} updated successfully.")
                         else:
-                            print(f"No document found with address {address} and drive time {drive_minutes}.")
-                    # Create a dictionary to hold the transformed data with readable column names
-                    readable_aggregated_data = {}
-                    # Loop through the variable_names dictionary to map codes to readable names
-                    for code, readable_name in variable_names.items():
-                        data = aggregated_data.get(code, None)
-                        
-                        if data is not None and isinstance(data, list):
-                            if 'Median' in readable_name:
-                                # Extract the list of values and weights for the current code
-                                try:
-                                    values, weights = zip(*data)
-                                    # Calculate the weighted median
-                                    readable_aggregated_data[readable_name] = weighted_median(values, weights)
-                                except TypeError as e:
-                                    st.error(f"Error calculating weighted median for {readable_name}: {e}")
-                                    st.error(f"Data received: {data}")
-                            else:
-                                # For total counts, sum the values
-                                try:
-                                    total = sum(value for value, weight in data)
-                                    readable_aggregated_data[readable_name] = total
-                                except TypeError as e:
-                                    st.error(f"Error summing values for {readable_name}: {e}")
-                                    st.error(f"Data received: {data}")
-                        else:
-                            # Handle the case where data is not a list of tuples
-                            readable_aggregated_data[readable_name] = data if isinstance(data, (int, float)) else 0
+                            st.error(f"No document found with address {address} and drive time {drive_minutes}.")
 
-                    # Create a pandas DataFrame using the transformed data
-                    df = pd.DataFrame([readable_aggregated_data])
+                            
+                    # Create a DataFrame from the aggregated demographic data
+                    list_of_dicts = []
+                    for var in variable_codes:
+                        var_dict = {'Variable': variable_names[var]}  # Use the actual name instead of the code
+                        for year in range(2017, 2022):
+                            year_str = str(year)
+                            var_dict[year_str] = aggregated_data.get(year_str, {}).get(var, 0)
+                        list_of_dicts.append(var_dict)
+
+                    df_aggregated = pd.DataFrame(list_of_dicts)
+                    df_aggregated.set_index('Variable', inplace=True)
+                    df_aggregated = df_aggregated.T
+                    df_aggregated.index.name = 'Year'
 
                     # Display the DataFrame in Streamlit
-                    st.dataframe(df)
-                    status_message.empty()
+                    st.dataframe(df_aggregated)
                     
-            pass
+                    st.write('#### Quantitative Analysis of Demographics')
+                
+                    # Construct the prompt for the GPT model
+                    prompt = "Identify and highlight key quantitative insights related to demographics based on the following data over the past five years:\n\n"
+                    for var in variable_codes:
+                        prompt += f"{variable_names[var]}:\n"
+                        for year in range(2017, 2022):
+                            year_str = str(year)
+                            value = aggregated_data.get(year_str, {}).get(var, 0)
+                            prompt += f" - {year_str}: {value}\n"
+                        prompt += "\n"
+
+                    prompt += "Please provide a summary of significant demographic trends, potential implications for the real estate market, and any notable changes or patterns."
+                    st.write(prompt)
+                    # Call the OpenAI API with the prompt
+                    try:
+                        response = openai.ChatCompletion.create(
+                            model="gpt-3.5-turbo-16k",
+                            messages=[
+                                {
+                                    "role": "user",
+                                    "content": prompt
+                                }
+                            ],
+                            # Removed stream=True to get the full response at once
+                        )
+
+                        # Check if the response has content and display it
+                        if response.choices:
+                            response_content = response.choices[0].message['content']
+                            if response_content:
+                                # Display the response content
+                                st.write(response_content)
+                            else:
+                                st.write("The response from the model is empty.")
+                        else:
+                            st.write("No response received from the model.")
+
+                    except openai.error.OpenAIError as e:
+                        return f"An error occurred with the OpenAI API call: {str(e)}"
+                    except Exception as e:
+                        return f"An unexpected error occurred: {str(e)}"    
+                    
+
+
+                    st.write('#### Recommendations for RE Developers')
+                    # Initialize an empty placeholder before the loop
+                    demographics_summary_placeholder = st.empty()
+                    # Construct a prompt for the GPT model
+                    prompt = "Generate a detailed narrative analysis for real estate development based on the following demographic data over the past five years:\n\n"
+                    for var, name in variable_names.items():
+                        prompt += f"{name}:\n"
+                        for year in range(2017, 2022):
+                            year_str = str(year)
+                            value = aggregated_data.get(year_str, {}).get(var, 0)
+                            prompt += f" - {year_str}: {value}\n"
+                        prompt += "\n"
+
+                    prompt += "Based on these demographic trends, provide insights into potential real estate market demands, opportunities for residential or commercial development, and recommendations for real estate investors or city planners to address the needs of the community. present in 5 detailed bullets followed by a conclusion"
+                    #st.write(prompt)
+                    # Extract potential company name from the user's question using OpenAI
+                    try:
+                        response = openai.ChatCompletion.create(
+                            model="gpt-4",
+                            messages=[
+                                {
+                                    "role": "user",
+                                    "content": prompt
+                                }
+                            ],
+                            # Removed stream=True to get the full response at once
+                        )
+
+                        # Check if the response has content and display it
+                        if response.choices:
+                            response_content = response.choices[0].message['content']
+                            if response_content:
+                                # Display the response content
+                                st.write(response_content)
+                            else:
+                                st.write("The response from the model is empty.")
+                        else:
+                            st.write("No response received from the model.")
+
+                    except openai.error.OpenAIError as e:
+                        st.error(f"An error occurred with the OpenAI API call: {str(e)}")
+                    except Exception as e:
+                        st.error(f"An unexpected error occurred: {str(e)}")
+            
+                    st.write('## Neighborhood Key Attractions')
+                    query_str = (
+                        "Provide a brief overview (in bullet points) of the following key convenience points in the area of interest "
+                        "to assess its attractiveness for the build-to-rent industry. The audience is real estate professionals "
+                        "who are focused on understanding the potential of the area for residential development. Highlight the "
+                        "variety and richness of local amenities and attractions, including their proximity to the residential site, "
+                        "quality, and any standout features that would appeal to potential residents:\n\n"
+                        "- Restaurants: Variety of cuisines, notable dining experiences, and any award-winning establishments.\n"
+                        "- Cafes: Availability of casual coffee shops and work-friendly spaces with high-quality brews.\n"
+                        "- Grocery Stores & Supermarkets: Access to fresh produce, organic options, and international food selections.\n"
+                        "- Schools: Reputation and performance of local educational institutions, from primary to high school.\n"
+                        "- Childcare Centers: Quality and availability of daycare services for working families.\n"
+                        "- Parks & Recreational Areas: Presence of green spaces, playgrounds, and facilities for outdoor activities.\n"
+                        "- Medical Facilities: Range of healthcare services, including hospitals, clinics, and specialist centers.\n"
+                        "- Public Transport: Connectivity and convenience of the public transportation network.\n"
+                        "- Shopping Centers & Malls: Diversity of retail stores, presence of major brands, and shopping convenience.\n"
+                        "- Fitness Centers & Gyms: Quality of fitness facilities, availability of classes, and personal training services.\n"
+                        "- Entertainment Venues: Options for nightlife, cinemas, theaters, and cultural events.\n\n"
+                        "Each point should provide a snapshot that captures the essence of what these amenities offer to residents, "
+                        "emphasizing aspects that are particularly attractive for the build-to-rent sector."
+                    )
+
+
+                    # Constants for Pinecone connection
+                    API_KEY = st.secrets['PINECONE_API_KEY']
+                    ENVIRONMENT = st.secrets['PINECONE_ENVIRONMENT']
+                    INDEX_NAME = st.secrets['PINECONE_INDEX_NAME']
+
+
+                    # Initialize Pinecone with the new API key and index name
+                    initialize_pinecone_connection(API_KEY, ENVIRONMENT)
+                    vector_store = setup_vector_store(INDEX_NAME)
+
+                    # Create the storage context
+                    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+
+                    index = VectorStoreIndex.from_vector_store(vector_store)
+                    query_engine = index.as_query_engine(
+                        mode='tree_summarize',
+                        top_k=50,
+                    )
+                    # Query the index using the query string
+                    response = query_engine.query(query_str)
+
+                    # Print the synthesized response which should contain trading ideas
+                    st.write(str(response.response))
+                    attractions_query = st.text_input("Enter your attractions related query:")
+                    query_str = (
+                            f"Respond to the user's query: {attractions_query}; regarding local attractions and amenities that impact the attractiveness "
+                            f"of an area for the build-to-rent industry. Real estate professionals are interested in a comprehensive understanding "
+                            f"of the neighborhood's potential for residential development. Address the variety and quality of the following points, "
+                            f"emphasizing their appeal to homebuyers and renters:\n\n"
+                        )
+                    if st.button("Submit"):
+                        query_engine = index.as_query_engine(streaming=True, similarity_top_k=1)
+                        response_stream = query_engine.query(query_str)
+                        # Display the accumulated response
+                        st.markdown("### Answer:")
+                        placeholder = st.empty()
+
+                        accumulated_response = ""
+                        for chunk in response_stream.response_gen:
+                            accumulated_response += chunk
+                            placeholder.markdown(accumulated_response)
+                    pass
         elif option == 'Reports':
             # Code for Reports
             pass

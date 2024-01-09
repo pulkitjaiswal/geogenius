@@ -12,5 +12,14 @@ pymongo
 us
 census
 llama_index
-openai
-pymongo
+openai==0.28
+pinecone-client
+llama_index
+pytz
+transformers
+nltk
+pandas
+plotly
+requests
+matplotlib
+seaborn
